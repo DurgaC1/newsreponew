@@ -17,13 +17,18 @@ app.use(express.json());
 const NEWS_API_KEY = process.env.NEWSAPI_KEY || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'change_me_in_production';
-const PORT = process.env.PORT || 7000;
+const PORT = process.env.PORT || 7001;
 
 // OpenAI setup (optional)
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 // LowDB setup with default data
-const dbFile = path.join(__dirname, 'db.json');
+// Use /tmp for Vercel serverless (ephemeral storage)
+// Note: Data won't persist between function invocations in serverless mode
+// For production, consider using Vercel KV, MongoDB, or another database service
+const dbFile = process.env.VERCEL 
+  ? path.join('/tmp', 'db.json')
+  : path.join(__dirname, 'db.json');
 const adapter = new JSONFile(dbFile);
 const defaultData = { users: [], bookmarks: [] };
 const db = new Low(adapter, defaultData);
@@ -184,12 +189,29 @@ app.post("/api/summarize", async (req, res) => {
   }
 });
 
-// -------- Serve React build --------
-app.use(express.static(path.join(__dirname, '../client/build')));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-});
+// -------- Serve React build (only in local development) --------
+// In Vercel, the frontend is deployed separately, so we don't serve static files
+if (process.env.VERCEL !== '1') {
+  // Serve static files (only if file exists, otherwise calls next())
+  app.use(express.static(path.join(__dirname, '../client/build')));
 
-app.listen(PORT, () =>
-  console.log(`✅ NewsGenie server running on port ${PORT}`)
-);
+  // Catch-all route: serve index.html for non-API routes (React Router)
+  // API routes are defined above, so they will be matched first
+  app.get('*', (req, res) => {
+    // Safety check: Don't serve index.html for API routes
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
+  });
+}
+
+// Export for Vercel serverless
+module.exports = app;
+
+// Only listen if not in Vercel environment
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () =>
+    console.log(`✅ NewsGenie server running on port ${PORT}`)
+  );
+}
