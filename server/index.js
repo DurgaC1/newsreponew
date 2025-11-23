@@ -5,8 +5,9 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const dotenv = require('dotenv');
 const path = require('path');
-const { Low } = require('lowdb');
-const { JSONFile } = require('lowdb/node');
+// LowDB v6+ is ES Module, so we'll use dynamic import
+// const { Low } = require('lowdb');
+// const { JSONFile } = require('lowdb/node');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const OpenAI = require('openai');
@@ -48,16 +49,33 @@ try {
 // Note: Data won't persist between function invocations in serverless mode
 // For production, consider using Vercel KV, MongoDB, or another database service
 let db = null;
-let adapter = null;
+let Low = null;
+let JSONFile = null;
 const defaultData = { users: [], bookmarks: [] };
 
-function getDb() {
+// Dynamic import for lowdb (ES Module)
+async function initLowdb() {
+  if (!Low || !JSONFile) {
+    try {
+      const lowdbModule = await import('lowdb');
+      const nodeModule = await import('lowdb/node');
+      Low = lowdbModule.Low;
+      JSONFile = nodeModule.JSONFile;
+    } catch (error) {
+      console.error('Failed to import lowdb:', error);
+      throw error;
+    }
+  }
+}
+
+async function getDb() {
   if (!db) {
     try {
+      await initLowdb();
       const dbFile = process.env.VERCEL 
         ? path.join('/tmp', 'db.json')
         : path.join(__dirname, 'db.json');
-      adapter = new JSONFile(dbFile);
+      const adapter = new JSONFile(dbFile);
       db = new Low(adapter, defaultData);
     } catch (error) {
       console.error('Database initialization error:', error);
@@ -71,7 +89,7 @@ function getDb() {
 // Initialize database - make it safe for serverless
 async function initDb() {
   try {
-    const currentDb = getDb();
+    const currentDb = await getDb();
     await currentDb.read();
     if (!currentDb.data) {
       currentDb.data = defaultData;
@@ -81,7 +99,7 @@ async function initDb() {
     console.error('Database init error:', error);
     // Initialize with default data if read fails
     try {
-      const currentDb = getDb();
+      const currentDb = await getDb();
       currentDb.data = defaultData;
       await currentDb.write();
     } catch (writeError) {
@@ -93,7 +111,7 @@ async function initDb() {
 // Initialize database lazily - don't block module load
 let dbInitialized = false;
 async function ensureDb() {
-  const currentDb = getDb();
+  const currentDb = await getDb();
   if (!dbInitialized) {
     await initDb();
     dbInitialized = true;
