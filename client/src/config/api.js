@@ -16,7 +16,10 @@ const getApiBaseUrl = () => {
 export const API_BASE_URL = getApiBaseUrl();
 
 export const apiFetch = (endpoint, options = {}) => {
-  const url = `${API_BASE_URL}${endpoint}`;
+  // Remove leading slash from endpoint if present, and ensure base URL doesn't end with slash
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const cleanBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const url = `${cleanBaseUrl}${cleanEndpoint}`;
   return fetch(url, options);
 };
 
