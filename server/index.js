@@ -12,16 +12,14 @@ const OpenAI = require('openai');
 dotenv.config();
 const app = express();
 
-// CORS configuration - allow frontend domain
-const corsOptions = {
-  origin: [
-    'http://localhost:3000',
-    'https://newsreponew.vercel.app',
-    process.env.FRONTEND_URL
-  ].filter(Boolean),
-  credentials: true
-};
-app.use(cors(corsOptions));
+// CORS configuration - allow all origins for Vercel deployment
+// This ensures CORS works properly in serverless environment
+app.use(cors({
+  origin: true, // Allow all origins
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
 app.use(express.json());
 
 const NEWS_API_KEY = process.env.NEWSAPI_KEY || '';
@@ -43,12 +41,35 @@ const adapter = new JSONFile(dbFile);
 const defaultData = { users: [], bookmarks: [] };
 const db = new Low(adapter, defaultData);
 
+// Initialize database - make it safe for serverless
 async function initDb() {
-  await db.read();
-  if (!db.data) db.data = defaultData;
-  await db.write();
+  try {
+    await db.read();
+    if (!db.data) {
+      db.data = defaultData;
+      await db.write();
+    }
+  } catch (error) {
+    console.error('Database init error:', error);
+    // Initialize with default data if read fails
+    db.data = defaultData;
+    try {
+      await db.write();
+    } catch (writeError) {
+      console.error('Database write error:', writeError);
+    }
+  }
 }
-initDb();
+
+// Initialize database lazily - don't block module load
+let dbInitialized = false;
+async function ensureDb() {
+  if (!dbInitialized) {
+    await initDb();
+    dbInitialized = true;
+  }
+  return db;
+}
 
 function generateToken(user) {
   return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '8h' });
@@ -56,39 +77,51 @@ function generateToken(user) {
 
 // -------- Auth Routes --------
 app.post('/api/auth/register', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: 'Missing email or password' });
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ error: 'Missing email or password' });
 
-  await db.read();
-  const exists = db.data.users.find(u => u.email === email.toLowerCase());
-  if (exists) return res.status(400).json({ error: 'User already exists' });
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    const exists = currentDb.data.users.find(u => u.email === email.toLowerCase());
+    if (exists) return res.status(400).json({ error: 'User already exists' });
 
-  const hash = await bcrypt.hash(password, 10);
-  const id = Date.now();
-  const user = { id, email: email.toLowerCase(), password: hash };
+    const hash = await bcrypt.hash(password, 10);
+    const id = Date.now();
+    const user = { id, email: email.toLowerCase(), password: hash };
 
-  db.data.users.push(user);
-  await db.write();
+    currentDb.data.users.push(user);
+    await currentDb.write();
 
-  const token = generateToken(user);
-  res.json({ token, user: { id: user.id, email: user.email } });
+    const token = generateToken(user);
+    res.json({ token, user: { id: user.id, email: user.email } });
+  } catch (error) {
+    console.error('Register error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: 'Missing email or password' });
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ error: 'Missing email or password' });
 
-  await db.read();
-  const user = db.data.users.find(u => u.email === email.toLowerCase());
-  if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    const user = currentDb.data.users.find(u => u.email === email.toLowerCase());
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
 
-  const token = generateToken(user);
-  res.json({ token, user: { id: user.id, email: user.email } });
+    const token = generateToken(user);
+    res.json({ token, user: { id: user.id, email: user.email } });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // -------- JWT Middleware --------
@@ -106,27 +139,39 @@ function authenticateToken(req, res, next) {
 
 // -------- Bookmarks --------
 app.get('/api/bookmarks', authenticateToken, async (req, res) => {
-  await db.read();
-  const items = db.data.bookmarks.filter(b => b.userId === req.user.id);
-  res.json(items);
+  try {
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    const items = currentDb.data.bookmarks.filter(b => b.userId === req.user.id);
+    res.json(items);
+  } catch (error) {
+    console.error('Get bookmarks error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 app.post('/api/bookmarks', authenticateToken, async (req, res) => {
-  const item = req.body;
-  if (!item || !item.title)
-    return res.status(400).json({ error: 'Invalid bookmark' });
+  try {
+    const item = req.body;
+    if (!item || !item.title)
+      return res.status(400).json({ error: 'Invalid bookmark' });
 
-  await db.read();
-  const bookmark = {
-    id: Date.now(),
-    userId: req.user.id,
-    ...item,
-    createdAt: new Date().toISOString(),
-  };
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    const bookmark = {
+      id: Date.now(),
+      userId: req.user.id,
+      ...item,
+      createdAt: new Date().toISOString(),
+    };
 
-  db.data.bookmarks.push(bookmark);
-  await db.write();
-  res.json({ ok: true, bookmark });
+    currentDb.data.bookmarks.push(bookmark);
+    await currentDb.write();
+    res.json({ ok: true, bookmark });
+  } catch (error) {
+    console.error('Create bookmark error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // -------- NewsAPI Proxy --------
@@ -165,11 +210,23 @@ app.get('/api/search', async (req, res) => {
 // GEMINI IMPORT (v1)
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Initialize Gemini only if API key is available
+let genAI = null;
+try {
+  if (process.env.GEMINI_API_KEY) {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  }
+} catch (error) {
+  console.error('Gemini initialization error:', error);
+}
 
 // Summarize with Gemini (correct endpoint, works)
 app.post("/api/summarize", async (req, res) => {
   try {
+    if (!genAI) {
+      return res.status(500).json({ error: "Gemini API not configured. Please set GEMINI_API_KEY." });
+    }
+
     const { url, content } = req.body;
 
     let text = content;
