@@ -1,3 +1,5 @@
+// Wrap everything in try-catch to prevent module-level crashes
+try {
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -31,34 +33,57 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'change_me_in_production';
 const PORT = process.env.PORT || 7001;
 
-// OpenAI setup (optional)
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+// OpenAI setup (optional) - lazy initialization to prevent module-level errors
+let openai = null;
+try {
+  if (OPENAI_API_KEY) {
+    openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+  }
+} catch (error) {
+  console.error('OpenAI initialization error:', error);
+}
 
 // LowDB setup with default data
 // Use /tmp for Vercel serverless (ephemeral storage)
 // Note: Data won't persist between function invocations in serverless mode
 // For production, consider using Vercel KV, MongoDB, or another database service
-const dbFile = process.env.VERCEL 
-  ? path.join('/tmp', 'db.json')
-  : path.join(__dirname, 'db.json');
-const adapter = new JSONFile(dbFile);
+let db = null;
+let adapter = null;
 const defaultData = { users: [], bookmarks: [] };
-const db = new Low(adapter, defaultData);
+
+function getDb() {
+  if (!db) {
+    try {
+      const dbFile = process.env.VERCEL 
+        ? path.join('/tmp', 'db.json')
+        : path.join(__dirname, 'db.json');
+      adapter = new JSONFile(dbFile);
+      db = new Low(adapter, defaultData);
+    } catch (error) {
+      console.error('Database initialization error:', error);
+      // Create a minimal in-memory database as fallback
+      db = { data: defaultData, read: async () => {}, write: async () => {} };
+    }
+  }
+  return db;
+}
 
 // Initialize database - make it safe for serverless
 async function initDb() {
   try {
-    await db.read();
-    if (!db.data) {
-      db.data = defaultData;
-      await db.write();
+    const currentDb = getDb();
+    await currentDb.read();
+    if (!currentDb.data) {
+      currentDb.data = defaultData;
+      await currentDb.write();
     }
   } catch (error) {
     console.error('Database init error:', error);
     // Initialize with default data if read fails
-    db.data = defaultData;
     try {
-      await db.write();
+      const currentDb = getDb();
+      currentDb.data = defaultData;
+      await currentDb.write();
     } catch (writeError) {
       console.error('Database write error:', writeError);
     }
@@ -68,12 +93,15 @@ async function initDb() {
 // Initialize database lazily - don't block module load
 let dbInitialized = false;
 async function ensureDb() {
+  const currentDb = getDb();
   if (!dbInitialized) {
     await initDb();
     dbInitialized = true;
   }
-  return db;
+  return currentDb;
 }
+
+// Don't initialize at module level - let it be lazy
 
 function generateToken(user) {
   return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '8h' });
@@ -81,11 +109,18 @@ function generateToken(user) {
 
 // Health check endpoint - test if server is working
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    environment: process.env.VERCEL ? 'vercel' : 'local'
-  });
+  try {
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      environment: process.env.VERCEL ? 'vercel' : 'local',
+      hasNewsApiKey: !!process.env.NEWSAPI_KEY,
+      hasJwtSecret: !!process.env.JWT_SECRET
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({ error: 'Health check failed', message: error.message });
+  }
 });
 
 // -------- Auth Routes --------
@@ -323,4 +358,19 @@ if (process.env.VERCEL !== '1') {
   app.listen(PORT, () =>
     console.log(`✅ NewsGenie server running on port ${PORT}`)
   );
+}
+
+} catch (error) {
+  // If module initialization fails, create a minimal error handler
+  console.error('Module initialization error:', error);
+  const express = require('express');
+  const app = express();
+  app.use((req, res) => {
+    res.status(500).json({ 
+      error: 'Server initialization failed', 
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  });
+  module.exports = app;
 }
