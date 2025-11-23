@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { apiFetch } from '../config/api';
 
 export default function Bookmarks() {
   const [items, setItems] = useState([]);
@@ -10,7 +11,7 @@ export default function Bookmarks() {
       setError('Login to view bookmarks.');
       return;
     }
-    fetch('/api/bookmarks', {
+    apiFetch('/api/bookmarks', {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())

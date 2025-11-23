@@ -11,7 +11,17 @@ const OpenAI = require('openai');
 
 dotenv.config();
 const app = express();
-app.use(cors());
+
+// CORS configuration - allow frontend domain
+const corsOptions = {
+  origin: [
+    'http://localhost:3000',
+    'https://newsreponew.vercel.app',
+    process.env.FRONTEND_URL
+  ].filter(Boolean),
+  credentials: true
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 const NEWS_API_KEY = process.env.NEWSAPI_KEY || '';

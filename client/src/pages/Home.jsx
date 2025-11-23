@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import NewsCard from '../components/NewsCard';
 import Loader from '../components/Loader';
+import { apiFetch } from '../config/api';
 
 export default function Home() {
   const [articles, setArticles] = useState([]);
@@ -10,7 +11,7 @@ export default function Home() {
   useEffect(() => {
     setLoading(true);
     setError('');
-    fetch('/api/news')
+    apiFetch('/api/news')
       .then((r) => r.json())
       .then((data) => {
         if (data.error) {

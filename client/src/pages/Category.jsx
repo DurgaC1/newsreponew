@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import NewsCard from '../components/NewsCard';
 import Overview from '../components/Overview';
 import Loader from '../components/Loader';
+import { apiFetch } from '../config/api';
 
 export default function Category() {
   const { category } = useParams();
@@ -15,7 +16,7 @@ export default function Category() {
     setLoading(true);
     setError('');
     setSummary('');
-    fetch(`/api/news?category=${encodeURIComponent(category)}`)
+    apiFetch(`/api/news?category=${encodeURIComponent(category)}`)
       .then((r) => r.json())
       .then((data) => {
         if (data.error) setError(data.error);
@@ -40,7 +41,7 @@ export default function Category() {
       return;
     }
     try {
-      const res = await fetch('/api/bookmarks', {
+      const res = await apiFetch('/api/bookmarks', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -58,7 +59,7 @@ export default function Category() {
 
   const onSummarize = async (article) => {
     try {
-      const res = await fetch('/api/summarize', {
+      const res = await apiFetch('/api/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: article.url }),

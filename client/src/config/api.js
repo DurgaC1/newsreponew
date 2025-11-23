@@ -1,12 +1,15 @@
 // API configuration
-// In production, this will be set via environment variable
-// For local development, it uses the proxy from package.json
+// Backend API URL - change this to your backend Vercel URL
 const getApiBaseUrl = () => {
-  // If REACT_APP_API_URL is set, use it (for production)
+  // If REACT_APP_API_URL is set (via environment variable), use it
   if (process.env.REACT_APP_API_URL) {
     return process.env.REACT_APP_API_URL;
   }
-  // Otherwise, use relative URLs (works with proxy in dev, or same domain in production)
+  // Production backend URL
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://server-news.vercel.app';
+  }
+  // Development: use proxy from package.json (localhost:7001)
   return '';
 };
 
