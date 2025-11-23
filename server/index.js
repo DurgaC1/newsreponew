@@ -20,6 +20,10 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+// Handle OPTIONS requests for CORS preflight
+app.options('*', cors());
+
 app.use(express.json());
 
 const NEWS_API_KEY = process.env.NEWSAPI_KEY || '';
@@ -74,6 +78,15 @@ async function ensureDb() {
 function generateToken(user) {
   return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '8h' });
 }
+
+// Health check endpoint - test if server is working
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    environment: process.env.VERCEL ? 'vercel' : 'local'
+  });
+});
 
 // -------- Auth Routes --------
 app.post('/api/auth/register', async (req, res) => {
@@ -176,54 +189,72 @@ app.post('/api/bookmarks', authenticateToken, async (req, res) => {
 
 // -------- NewsAPI Proxy --------
 app.get('/api/news', async (req, res) => {
-  const category = req.query.category || '';
-  const q = category ? `&category=${encodeURIComponent(category)}` : '';
-  if (!NEWS_API_KEY)
-    return res.status(500).json({ error: 'Server: NEWSAPI_KEY not set in .env' });
-
   try {
+    const category = req.query.category || '';
+    const q = category ? `&category=${encodeURIComponent(category)}` : '';
+    if (!NEWS_API_KEY) {
+      return res.status(500).json({ error: 'Server: NEWSAPI_KEY not set in .env' });
+    }
+
     const url = `https://newsapi.org/v2/top-headlines?language=en${q}&pageSize=20&apiKey=${NEWS_API_KEY}`;
     const r = await fetch(url);
+    if (!r.ok) {
+      const errorText = await r.text();
+      return res.status(r.status).json({ error: `NewsAPI error: ${errorText}` });
+    }
     const data = await r.json();
     res.json(data);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('News API error:', e);
+    res.status(500).json({ error: e.message || 'Failed to fetch news' });
   }
 });
 
 app.get('/api/search', async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.status(400).json({ error: 'Missing q parameter' });
-  if (!NEWS_API_KEY)
-    return res.status(500).json({ error: 'Server: NEWSAPI_KEY not set in .env' });
-
   try {
+    const q = req.query.q;
+    if (!q) return res.status(400).json({ error: 'Missing q parameter' });
+    if (!NEWS_API_KEY) {
+      return res.status(500).json({ error: 'Server: NEWSAPI_KEY not set in .env' });
+    }
+
     const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&pageSize=20&apiKey=${NEWS_API_KEY}`;
     const r = await fetch(url);
+    if (!r.ok) {
+      const errorText = await r.text();
+      return res.status(r.status).json({ error: `NewsAPI error: ${errorText}` });
+    }
     const data = await r.json();
     res.json(data);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('Search API error:', e);
+    res.status(500).json({ error: e.message || 'Failed to search news' });
   }
 });
 
-// GEMINI IMPORT (v1)
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-// Initialize Gemini only if API key is available
+// GEMINI IMPORT (v1) - lazy load to prevent module-level errors
+let GoogleGenerativeAI = null;
 let genAI = null;
-try {
-  if (process.env.GEMINI_API_KEY) {
-    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+function getGenAI() {
+  if (!genAI && process.env.GEMINI_API_KEY) {
+    try {
+      if (!GoogleGenerativeAI) {
+        GoogleGenerativeAI = require("@google/generative-ai").GoogleGenerativeAI;
+      }
+      genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    } catch (error) {
+      console.error('Gemini initialization error:', error);
+    }
   }
-} catch (error) {
-  console.error('Gemini initialization error:', error);
+  return genAI;
 }
 
 // Summarize with Gemini (correct endpoint, works)
 app.post("/api/summarize", async (req, res) => {
   try {
-    if (!genAI) {
+    const genAIInstance = getGenAI();
+    if (!genAIInstance) {
       return res.status(500).json({ error: "Gemini API not configured. Please set GEMINI_API_KEY." });
     }
 
@@ -241,7 +272,7 @@ app.post("/api/summarize", async (req, res) => {
     }
 
     // Use correct model (v1 endpoint)
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAIInstance.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const result = await model.generateContent([
       `Summarize into 3 bullet points:\n\n${text.slice(0, 4000)}`
@@ -272,6 +303,17 @@ if (process.env.VERCEL !== '1') {
     res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
   });
 }
+
+// Global error handler - catch any unhandled errors
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
+// 404 handler for API routes
+app.use('/api/*', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
+});
 
 // Export for Vercel serverless
 module.exports = app;
