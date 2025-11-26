@@ -5,8 +5,9 @@ const cors = require("cors");
 const fetch = require("node-fetch");
 const dotenv = require("dotenv");
 const path = require("path");
-const { Low } = require("lowdb");
-const { JSONFile } = require("lowdb/node");
+// LowDB v6+ is ES Module - use dynamic import
+let Low = null;
+let JSONFile = null;
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { JSDOM } = require("jsdom");
@@ -14,7 +15,22 @@ const { Readability } = require("@mozilla/readability");
 
 dotenv.config();
 const app = express();
-app.use(cors());
+
+// CORS configuration - explicitly allow frontend origin
+app.use(cors({
+  origin: [
+    'https://newsreponew.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:3001'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Handle OPTIONS requests for CORS preflight
+app.options('*', cors());
+
 app.use(express.json());
 
 // Debug route to check which API key the backend is actually using
@@ -31,24 +47,57 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || "";
 const JWT_SECRET = process.env.JWT_SECRET || "change_me";
 const PORT = process.env.PORT || 7001;
 
-// LowDB
-const dbFile = path.join(__dirname, "db.json");
-const adapter = new JSONFile(dbFile);
+// LowDB - dynamic import for ES Module support
+let db = null;
 const defaultData = { users: [], bookmarks: [] };
-const db = new Low(adapter, defaultData);
 
-async function initDb() {
-  try {
-    await db.read();
-    if (!db.data) db.data = defaultData;
-    await db.write();
-  } catch (e) {
-    // fallback to in-memory minimal DB if file system isn't writable (serverless)
-    console.warn("LowDB init warning:", e && e.message ? e.message : e);
-    if (!db.data) db.data = defaultData;
+async function initLowdb() {
+  if (!Low || !JSONFile) {
+    try {
+      const lowdbModule = await import('lowdb');
+      const nodeModule = await import('lowdb/node');
+      Low = lowdbModule.Low;
+      JSONFile = nodeModule.JSONFile;
+    } catch (error) {
+      console.error('Failed to import lowdb:', error);
+      throw error;
+    }
   }
 }
-initDb();
+
+async function getDb() {
+  if (!db) {
+    try {
+      await initLowdb();
+      // Use /tmp for Vercel serverless, db.json for local
+      const dbFile = process.env.VERCEL 
+        ? path.join('/tmp', 'db.json')
+        : path.join(__dirname, 'db.json');
+      const adapter = new JSONFile(dbFile);
+      db = new Low(adapter, defaultData);
+      await db.read();
+      if (!db.data) {
+        db.data = defaultData;
+        await db.write();
+      }
+    } catch (e) {
+      console.warn("LowDB init warning:", e && e.message ? e.message : e);
+      // Fallback to in-memory minimal DB
+      db = { data: defaultData, read: async () => {}, write: async () => {} };
+    }
+  }
+  return db;
+}
+
+// Initialize database lazily
+let dbInitialized = false;
+async function ensureDb() {
+  if (!dbInitialized) {
+    await getDb();
+    dbInitialized = true;
+  }
+  return db;
+}
 
 // JWT helper
 function generateToken(user) {
@@ -64,17 +113,18 @@ app.post("/api/auth/register", async (req, res) => {
     if (!email || !password)
       return res.status(400).json({ error: "Missing email or password" });
 
-    await db.read();
-    const exists = db.data.users.find((u) => u.email === email.toLowerCase());
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    const exists = currentDb.data.users.find((u) => u.email === email.toLowerCase());
     if (exists) return res.status(400).json({ error: "User already exists" });
 
     const hash = await bcrypt.hash(password, 10);
     const id = Date.now();
 
     const user = { id, email: email.toLowerCase(), password: hash };
-    db.data.users.push(user);
+    currentDb.data.users.push(user);
     // attempt write; ignore if running in ephemeral read-only fs
-    try { await db.write(); } catch (e) { console.warn("DB write skipped:", e && e.message ? e.message : e); }
+    try { await currentDb.write(); } catch (e) { console.warn("DB write skipped:", e && e.message ? e.message : e); }
 
     const token = generateToken(user);
     res.json({ token, user: { id, email } });
@@ -90,8 +140,9 @@ app.post("/api/auth/login", async (req, res) => {
     if (!email || !password)
       return res.status(400).json({ error: "Missing email or password" });
 
-    await db.read();
-    const user = db.data.users.find((u) => u.email === email.toLowerCase());
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    const user = currentDb.data.users.find((u) => u.email === email.toLowerCase());
     if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
     const ok = await bcrypt.compare(password, user.password);
@@ -120,8 +171,14 @@ function authenticate(req, res, next) {
 
 // -------------------- BOOKMARKS --------------------
 app.get("/api/bookmarks", authenticate, async (req, res) => {
-  await db.read();
-  res.json(db.data.bookmarks ? db.data.bookmarks.filter((b) => b.userId === req.user.id) : []);
+  try {
+    const currentDb = await ensureDb();
+    await currentDb.read();
+    res.json(currentDb.data.bookmarks ? currentDb.data.bookmarks.filter((b) => b.userId === req.user.id) : []);
+  } catch (err) {
+    console.error("GET BOOKMARKS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/bookmarks", authenticate, async (req, res) => {
@@ -130,7 +187,8 @@ app.post("/api/bookmarks", authenticate, async (req, res) => {
     if (!item || !item.title)
       return res.status(400).json({ error: "Invalid bookmark" });
 
-    await db.read();
+    const currentDb = await ensureDb();
+    await currentDb.read();
     const bookmark = {
       id: Date.now(),
       userId: req.user.id,
@@ -138,9 +196,9 @@ app.post("/api/bookmarks", authenticate, async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
-    if (!db.data.bookmarks) db.data.bookmarks = [];
-    db.data.bookmarks.push(bookmark);
-    try { await db.write(); } catch (e) { console.warn("DB write skipped:", e && e.message ? e.message : e); }
+    if (!currentDb.data.bookmarks) currentDb.data.bookmarks = [];
+    currentDb.data.bookmarks.push(bookmark);
+    try { await currentDb.write(); } catch (e) { console.warn("DB write skipped:", e && e.message ? e.message : e); }
     res.json({ ok: true, bookmark });
   } catch (err) {
     console.error("BOOKMARK ERROR:", err);
