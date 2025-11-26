@@ -146,3 +146,5 @@ expo-env.d.ts
 .stylelintcache
 *.rpt2_cache/
 *.rts2_cache_*
+
+.DS_Store
