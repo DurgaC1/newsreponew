@@ -43,9 +43,9 @@ export default function Home() {
   const formatTime = (iso) =>
     iso
       ? new Date(iso).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        })
+        hour: '2-digit',
+        minute: '2-digit',
+      })
       : '';
 
   return (
@@ -98,10 +98,9 @@ export default function Home() {
               <div
                 className="h-32 bg-cover bg-center"
                 style={{
-                  backgroundImage: `url(${
-                    a.urlToImage ||
+                  backgroundImage: `url(${a.urlToImage ||
                     'https://images.unsplash.com/photo-1521412644187-c49fa049e84d?q=80&w=800&auto=format&fit=crop'
-                  })`,
+                    })`,
                 }}
               />
               <div className="p-4 flex flex-col flex-1">
@@ -133,7 +132,7 @@ export default function Home() {
 
       {more.length > 0 && (
         <section className="mt-8">
-          <h2 className="text-lg font-semibold mb-3 text-slate-800">
+          <h2 className="text-2xl font-semibold mb-3 text-slate-800">
             More stories
           </h2>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -141,8 +140,8 @@ export default function Home() {
               <NewsCard
                 key={a.url}
                 article={a}
-                onBookmark={() => {}}
-                onSummarize={() => {}}
+                onBookmark={() => { }}
+                onSummarize={() => { }}
               />
             ))}
           </div>
